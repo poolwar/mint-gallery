@@ -796,26 +796,33 @@
 
   window.__onEmbeddedReady = function(imgs) {
     allImages = imgs || [];
-    // 按保存时间排序（新的在前，无时间的排最后）
     sortBySavedAt();
     selectedSet.clear();
     selectedOrder = [];
     timelineData = null;
-    renderAll();
+    // 先用缓存 URL 替换，再渲染（秒开）
+    resolveUrlsWithCache(allImages).then(function() {
+      renderAll();
+      // 后台缓存未缓存的图片
+      cacheAllImagesInBackground();
+    });
     extractAllDates().then(function() {
       if (currentLayout === 'timeline') renderAll();
     });
     // 从 Supabase 加载云端上传的照片
     loadFromSupabase().then(function(cloudImages) {
       if (cloudImages.length > 0) {
-        // 去重：跳过与已有图片同名的
         var existingNames = {};
         allImages.forEach(function(img) { existingNames[img.name] = true; });
         var newImages = cloudImages.filter(function(img) { return !existingNames[img.name]; });
         if (newImages.length > 0) {
           allImages = allImages.concat(newImages);
           sortBySavedAt();
-          renderAll();
+          // 云端图片也尝试缓存
+          resolveUrlsWithCache(newImages).then(function() {
+            renderAll();
+            cacheAllImagesInBackground();
+          });
           extractAllDates().then(function() {
             if (currentLayout === 'timeline') renderAll();
           });
@@ -896,12 +903,94 @@
     if (error) throw error;
   }
 
+  // ===== 本地图片缓存（IndexedDB）=====
+  const IMG_CACHE_DB = 'mint-img-cache';
+  const IMG_CACHE_STORE = 'images';
+
+  function openImgCache() {
+    return new Promise(function(resolve, reject) {
+      var req = indexedDB.open(IMG_CACHE_DB, 1);
+      req.onupgradeneeded = function(e) {
+        if (!e.target.result.objectStoreNames.contains(IMG_CACHE_STORE)) {
+          e.target.result.createObjectStore(IMG_CACHE_STORE);
+        }
+      };
+      req.onsuccess = function(e) { resolve(e.target.result); };
+      req.onerror = function(e) { reject(e.target.error); };
+    });
+  }
+
+  // 从 IndexedDB 获取缓存的图片 blob URL
+  async function getCachedImageUrl(url) {
+    try {
+      var db = await openImgCache();
+      return new Promise(function(resolve) {
+        var tx = db.transaction(IMG_CACHE_STORE, 'readonly');
+        var req = tx.objectStore(IMG_CACHE_STORE).get(url);
+        req.onsuccess = function() {
+          if (req.result) {
+            resolve(URL.createObjectURL(req.result.blob));
+          } else {
+            resolve(null);
+          }
+        };
+        req.onerror = function() { resolve(null); };
+      });
+    } catch(e) { return null; }
+  }
+
+  // 将图片存入 IndexedDB 缓存
+  async function cacheImageToLocal(url) {
+    try {
+      // 跳过 blob URL（已经是本地的）
+      if (url.startsWith('blob:')) return;
+      var db = await openImgCache();
+      // 检查是否已缓存
+      var checkTx = db.transaction(IMG_CACHE_STORE, 'readonly');
+      var checkReq = checkTx.objectStore(IMG_CACHE_STORE).get(url);
+      var alreadyCached = await new Promise(function(resolve) {
+        checkReq.onsuccess = function() { resolve(!!checkReq.result); };
+        checkReq.onerror = function() { resolve(false); };
+      });
+      if (alreadyCached) return;
+      // 下载并存储
+      var resp = await fetch(url, { mode: 'cors' });
+      if (!resp.ok) return;
+      var blob = await resp.blob();
+      var writeTx = db.transaction(IMG_CACHE_STORE, 'readwrite');
+      writeTx.objectStore(IMG_CACHE_STORE).put({ blob: blob, cachedAt: Date.now() }, url);
+    } catch(e) { /* 静默失败 */ }
+  }
+
+  // 后台缓存所有当前显示的图片
+  function cacheAllImagesInBackground() {
+    setTimeout(function() {
+      allImages.forEach(function(img) {
+        cacheImageToLocal(img.url);
+      });
+    }, 2000);
+  }
+
+  // 为渲染用的 URL 列表预加载缓存（异步替换 blob URL）
+  async function resolveUrlsWithCache(images) {
+    var results = await Promise.all(images.map(async function(img) {
+      var cached = await getCachedImageUrl(img.url);
+      return { img: img, cachedUrl: cached };
+    }));
+    results.forEach(function(r) {
+      if (r.cachedUrl) r.img._cachedUrl = r.cachedUrl;
+    });
+  }
+
   window.loadImagesFromPaths=function(paths){
     allImages=paths.map(p=>({name:p.replace(/^.*[\\/]/,''), url:p, dateTaken:null}));
     selectedSet.clear(); selectedOrder=[];
-    renderAll();
+    // 尝试从缓存加载
+    resolveUrlsWithCache(allImages).then(function() { renderAll(); });
     // 异步提取 EXIF
     extractAllDates().then(()=>{ if(currentLayout==='timeline') renderAll(); });
+    // 后台缓存新图片
+    cacheAllImagesInBackground();
   };
 
   // ===== 上传 =====
@@ -1344,6 +1433,8 @@
       timelineData = null;
       renderAll();
       showToast('成功上传 ' + uploadedImages.length + ' 张照片 ✓');
+      // 后台缓存新上传的图片
+      cacheAllImagesInBackground();
       // 异步提取 EXIF
       extractAllDates().then(function() {
         if (currentLayout === 'timeline') renderAll();
@@ -1411,7 +1502,7 @@
       if(selectedSet.has(idx))card.classList.add('selected');
       card.innerHTML=`
         <button class="card-delete" title="删除">✕</button>
-        <img src="${img.url}" alt="${img.name}" loading="lazy"
+        <img src="${img._cachedUrl || img.url}" alt="${img.name}" loading="lazy"
              onload="this.style.opacity='1'" style="opacity:0;transition:opacity 0.5s ease">
         <div class="select-overlay"></div>
         <div class="select-order">${selectedOrder.indexOf(idx)+1||''}</div>
@@ -1484,7 +1575,7 @@
         el.innerHTML=`
           <div class="timeline-card" style="position:relative;">
             <button class="card-delete" title="删除">✕</button>
-            <img src="${item.img.url}" alt="${item.img.name}" loading="lazy"
+            <img src="${item.img._cachedUrl || item.img.url}" alt="${item.img.name}" loading="lazy"
                  onload="this.style.opacity='1'" style="opacity:0;transition:opacity 0.5s ease;height:${CARD_H}px;object-fit:cover;">
             <div class="timeline-card-info">
               <span class="timeline-card-name" title="${item.img.name}">${item.img.name}</span>
@@ -1528,7 +1619,7 @@
         card.style.position='relative';
         card.innerHTML=`
           <button class="card-delete" title="删除">✕</button>
-          <img src="${img.url}" alt="${img.name}" loading="lazy"
+          <img src="${img._cachedUrl || img.url}" alt="${img.name}" loading="lazy"
                onload="this.style.opacity='1'" style="opacity:0;transition:opacity 0.5s ease;">
           <div style="padding:6px 10px;font-size:0.75rem;color:#888;text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${img.name}</div>
         `;
@@ -1743,7 +1834,7 @@
   // ==============================
   function openLightbox(idx){
     currentIdx=idx;const img=allImages[idx];
-    lightboxImg.src=img.url;
+    lightboxImg.src=img._cachedUrl || img.url;
     let info=img.name+'  ('+(idx+1)+' / '+allImages.length+')';
     if(img.dateTaken)info+='  ·  🕐 '+formatDate(img.dateTaken);
     lightboxInfo.textContent=info;
@@ -1754,7 +1845,7 @@
     if(!allImages.length)return;
     currentIdx=(currentIdx+dir+allImages.length)%allImages.length;
     const img=allImages[currentIdx];
-    lightboxImg.src=img.url;
+    lightboxImg.src=img._cachedUrl || img.url;
     let info=img.name+'  ('+(currentIdx+1)+' / '+allImages.length+')';
     if(img.dateTaken)info+='  ·  🕐 '+formatDate(img.dateTaken);
     lightboxInfo.textContent=info;
