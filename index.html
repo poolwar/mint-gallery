@@ -943,15 +943,36 @@
 
 <div class="footer">用 ❤️ 为小画家搭建 · 每一幅画都值得被看见</div>
 
-<!-- Supabase SDK -->
+<!-- Supabase SDK（CDN 加载，国内可能较慢，所以用延迟初始化）-->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<!-- 备用 CDN -->
+<script>
+  if (typeof window.supabase === 'undefined') {
+    document.write('<script src="https://unpkg.com/@supabase/supabase-js@2/dist/umd/supabase.min.js"><\/script>');
+  }
+</script>
 <script>
 (function() {
-  // ===== Supabase 配置（部署前请替换为你的项目信息）=====
+  // ===== Supabase 配置 =====
   const SUPABASE_URL = 'https://hwyuaukabthsoupywtfp.supabase.co';
   const SUPABASE_ANON_KEY = 'sb_publishable_Pb97Zn0XW5aPVqn8OWVh5Q_mIjrRYG5';
   const SUPABASE_BUCKET = 'gallery-photos';
-  const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+  // 延迟初始化 Supabase（避免 SDK 加载失败导致整个页面不可用）
+  var _supabase = null;
+  function getSupabase() {
+    if (_supabase) return _supabase;
+    if (typeof window.supabase !== 'undefined' && window.supabase.createClient) {
+      try {
+        _supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+        return _supabase;
+      } catch(e) {
+        console.warn('Supabase 初始化失败:', e);
+        return null;
+      }
+    }
+    return null;
+  }
 
   const uploadZone=document.getElementById('uploadZone');
   const fileInput=document.getElementById('fileInput');
@@ -1052,16 +1073,18 @@
 
   // 上传图片到 Supabase Storage
   async function uploadToSupabase(file) {
-    // 生成唯一文件名：时间戳_原始名称
-    var fileName = Date.now() + '_' + file.name.replace(/[^a-zA-Z0-9._\-一-龥]/g, '_');
+    var client = getSupabase();
+    if (!client) throw new Error('云存储未就绪，请刷新页面后重试');
+    // 文件路径只保留 ASCII 字符（Supabase Storage 不支持中文 key）
+    var safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_').replace(/_+/g, '_');
+    var fileName = Date.now() + '_' + safeName;
     var filePath = 'uploads/' + fileName;
-    var _a = await supabase.storage.from(SUPABASE_BUCKET).upload(filePath, file, {
+    var _a = await client.storage.from(SUPABASE_BUCKET).upload(filePath, file, {
       cacheControl: '3600',
       upsert: false
     }), error = _a.error;
     if (error) throw error;
-    // 获取公开 URL
-    var _b = supabase.storage.from(SUPABASE_BUCKET).getPublicUrl(filePath), publicUrl = _b.data.publicUrl;
+    var _b = client.storage.from(SUPABASE_BUCKET).getPublicUrl(filePath), publicUrl = _b.data.publicUrl;
     return {
       name: file.name,
       url: publicUrl,
@@ -1072,7 +1095,9 @@
 
   // 从 Supabase 加载所有云端图片
   async function loadFromSupabase() {
-    var _a = await supabase.storage.from(SUPABASE_BUCKET).list('uploads', {
+    var client = getSupabase();
+    if (!client) { console.warn('Supabase 未就绪，跳过云端加载'); return []; }
+    var _a = await client.storage.from(SUPABASE_BUCKET).list('uploads', {
       limit: 500,
       sortBy: { column: 'created_at', order: 'desc' }
     }), data = _a.data, error = _a.error;
@@ -1080,8 +1105,7 @@
     if (!data || data.length === 0) return [];
     return data.map(function(item) {
       var filePath = 'uploads/' + item.name;
-      var _b = supabase.storage.from(SUPABASE_BUCKET).getPublicUrl(filePath), publicUrl = _b.data.publicUrl;
-      // 从文件名提取原始名称（去掉时间戳前缀）
+      var _b = client.storage.from(SUPABASE_BUCKET).getPublicUrl(filePath), publicUrl = _b.data.publicUrl;
       var origName = item.name.replace(/^\d+_/, '');
       return {
         name: origName,
@@ -1097,15 +1121,19 @@
 
   // 从 Supabase 删除单张图片
   async function deleteFromSupabase(filePath) {
-    var _a = await supabase.storage.from(SUPABASE_BUCKET).remove([filePath]), error = _a.error;
+    var client = getSupabase();
+    if (!client) throw new Error('云存储未就绪');
+    var _a = await client.storage.from(SUPABASE_BUCKET).remove([filePath]), error = _a.error;
     if (error) throw error;
   }
 
   // 清空 Supabase 中所有上传的图片
   async function clearAllFromSupabase(cloudImages) {
     if (!cloudImages || cloudImages.length === 0) return;
+    var client = getSupabase();
+    if (!client) throw new Error('云存储未就绪');
     var paths = cloudImages.map(function(img) { return img.path; });
-    var _a = await supabase.storage.from(SUPABASE_BUCKET).remove(paths), error = _a.error;
+    var _a = await client.storage.from(SUPABASE_BUCKET).remove(paths), error = _a.error;
     if (error) throw error;
   }
 
