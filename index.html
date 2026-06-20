@@ -647,6 +647,7 @@
   <button class="stitch-toggle" id="stitchToggle">🧩 拼接模式</button>
   <span style="color:var(--accent2);opacity:0.5;font-size:0.85rem;" id="imgCount">共 37 张作品</span>
   <span class="toolbar-divider"></span>
+  <button class="layout-btn" id="btnRefresh" style="font-size:0.8rem;" title="从云端同步最新照片">🔄 刷新</button>
   <button class="layout-btn" id="btnClearUploaded" style="font-size:0.8rem;opacity:0.6;">🗑️ 清除上传</button>
   <button class="layout-btn active" id="btnSaveToFile" style="font-size:0.8rem;background:var(--accent);color:#fff;" ">💾 保存到文件</button>
 </div>
@@ -1045,6 +1046,52 @@
     updateCardSelectUI();
   });
   stitchCancelBtn.addEventListener('click',exitStitchMode);
+  // ===== 刷新按钮：从云端同步最新照片 =====
+  var btnRefresh = document.getElementById('btnRefresh');
+  btnRefresh.addEventListener('click', function() {
+    btnRefresh.textContent = '⏳ 同步中...';
+    btnRefresh.disabled = true;
+    showToast('正在从云端同步...');
+    loadFromSupabase().then(function(cloudImages) {
+      if (!cloudImages || cloudImages.length === 0) {
+        showToast('云端暂无新照片');
+        btnRefresh.textContent = '🔄 刷新';
+        btnRefresh.disabled = false;
+        return;
+      }
+      // 去重合并
+      var existingNames = {};
+      allImages.forEach(function(img) { existingNames[img.name] = true; });
+      var newImages = cloudImages.filter(function(img) { return !existingNames[img.name]; });
+      if (newImages.length === 0) {
+        showToast('已是最新，没有新照片');
+        btnRefresh.textContent = '🔄 刷新';
+        btnRefresh.disabled = false;
+        return;
+      }
+      allImages = allImages.concat(newImages);
+      sortBySavedAt();
+      selectedSet.clear();
+      selectedOrder = [];
+      timelineData = null;
+      // 预解析缓存 URL
+      resolveUrlsWithCache(newImages).then(function() {
+        renderAll();
+        cacheAllImagesInBackground();
+        showToast('已同步 ' + newImages.length + ' 张新照片 ✓');
+        btnRefresh.textContent = '🔄 刷新';
+        btnRefresh.disabled = false;
+      });
+      extractAllDates().then(function() {
+        if (currentLayout === 'timeline') renderAll();
+      });
+    }).catch(function(e) {
+      console.warn('刷新失败:', e);
+      showToast('同步失败，请检查网络后重试');
+      btnRefresh.textContent = '🔄 刷新';
+      btnRefresh.disabled = false;
+    });
+  });
   // ===== 清除已上传照片 =====
   var btnClearUploaded = document.getElementById('btnClearUploaded');
   btnClearUploaded.addEventListener('click', function() {
