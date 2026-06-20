@@ -638,7 +638,7 @@
 <input type="file" id="fileInput" multiple="" accept="image/*" style="position:absolute;width:0;height:0;opacity:0;overflow:hidden;pointer-events:none">
 
 <div class="toolbar visible" id="toolbar">
-  <button class="layout-btn" data-layout="masonry">🏛️ 瀑布流</button>
+  <button class="layout-btn active" data-layout="masonry">🏛️ 瀑布流</button>
   <button class="layout-btn" data-layout="grid">🔲 整齐网格</button>
   <button class="layout-btn" data-layout="polaroid">📸 拍立得墙</button>
   <button class="layout-btn" data-layout="collage">🎭 密集拼贴</button>
@@ -652,7 +652,7 @@
   <button class="layout-btn active" id="btnSaveToFile" style="font-size:0.8rem;background:var(--accent);color:#fff;" ">💾 保存到文件</button>
 </div>
 
-<div class="gallery layout-undefined" id="gallery">
+<div class="gallery layout-masonry" id="gallery">
 </div>
 
 <div class="empty-state" id="emptyState">
